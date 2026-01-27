@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 pandas
-xgboost
+xgboost==2.0.3
 shap
 requests
 scikit-learn
