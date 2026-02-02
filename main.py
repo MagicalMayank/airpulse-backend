@@ -1,12 +1,14 @@
+import os
+import pickle
+import pandas as pd
+import json
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
-import pickle
-import pandas as pd
-import os
 
 app = FastAPI()
 
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,98 +16,90 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- AI & ML INITIALIZATION ---
-# DeepSeek Setup
-client = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com"
-)
+# --- 1. AI & ML Setup ---
+# DeepSeek Setup (OpenAI compatible)
+api_key = os.environ.get("DEEPSEEK_API_KEY")
+client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com") if api_key else None
 
-# Load Model Resources
+# Load ML Resources
 MODEL_PATH = "model/airpulse_unified_model.pkl"
 ENCODER_PATH = "model/city_encoder.pkl"
-
 model = None
 city_encoder = None
 
 def load_resources():
     global model, city_encoder
-    if model is None:
-        try:
+    try:
+        if os.path.exists(MODEL_PATH) and os.path.exists(ENCODER_PATH):
             with open(MODEL_PATH, "rb") as f:
                 model = pickle.load(f)
             with open(ENCODER_PATH, "rb") as f:
                 city_encoder = pickle.load(f)
             print("✅ Unified Model & City Encoder Loaded")
-        except Exception as e:
-            print(f"❌ Load Error: {e}")
+    except Exception as e:
+        print(f"❌ Error loading model: {e}")
 
 @app.on_event("startup")
 async def startup():
     load_resources()
 
-# --- ROUTES ---
+# --- 2. Routes ---
 
 @app.get("/")
 @app.head("/")
-async def health_check():
-    return {"status": "online", "engine": "DeepSeek + XGBoost"}
+async def root():
+    return {"status": "online", "message": "AirPulse 2.0 AI Engine is Live!"}
 
 @app.get("/policy-ai")
 async def policy_ai(query: str, city: str):
-    """Translates text policies to numerical slider values using DeepSeek"""
+    """DeepSeek translates natural language into numerical slider values"""
+    if not client:
+        raise HTTPException(status_code=500, detail="DeepSeek API Key missing on server")
+    
     system_prompt = f"""
     You are an Air Quality Policy Expert for AirPulse 2.0. 
-    Translate the user's policy into reduction percentages (0-100) for:
-    1. traffic_reduction
-    2. dust_reduction
-
+    Translate the user's policy into reduction percentages (0-100) for traffic and dust.
+    
     Context:
     - City: {city}
     - Training Data: 2015-2024 Indian City AQI
-    - Logic: Traffic reduces NO2; Dust control reduces PM10
-    - Specifics: If user mentions GRAP or Odd-Even, follow standard Delhi protocols.
-
-    Return ONLY a JSON object: {{"traffic": float, "dust": float, "reasoning": "string"}}
+    - Rules: Traffic reduction impacts NO2. Dust control impacts PM10.
+    - Special: For Delhi, follow GRAP or Odd-Even historical standards.
+    
+    Return ONLY a JSON object.
+    Example: {{"traffic": 40.0, "dust": 25.0, "reasoning": "Reason here"}}
     """
     try:
+        # Using JSON Output mode for strict parsing
         response = client.chat.completions.create(
-            model="deepseek-chat",
+            model="deepseek-chat", # Use DeepSeek-V3
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query},
+                {"role": "user", "content": f"Policy for {city}: {query}"},
             ],
             response_format={'type': 'json_object'}
         )
-        import json
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/simulate")
 async def simulate(city: str, baseline_aqi: float, traffic_reduction: float, dust_reduction: float):
     if model is None: load_resources()
     try:
-        # 1. City Code
-        try:
-            city_code = city_encoder.transform([city])[0]
-        except:
-            city_code = 0
-        
-        # 2. Proxy Transformation
+        # Encoding and Simulation Logic
+        city_code = city_encoder.transform([city])[0] if city_encoder else 0
         sim_traffic = 50.0 * (1 - traffic_reduction/100)
         sim_dust = 50.0 * (1 - dust_reduction/100)
         
-        # 3. Predict
         input_data = pd.DataFrame(
             [[city_code, baseline_aqi, sim_traffic, sim_dust]], 
             columns=['City_Code', 'AQI_lag_1', 'traffic_proxy', 'dust_proxy']
         )
         prediction = float(model.predict(input_data)[0])
         
-        # 4. Scaling Logic
-        raw_reduction = baseline_aqi - prediction
-        final_reduction = max(5, raw_reduction) if (traffic_reduction + dust_reduction) > 0 else 0
+        # Consistent UI scaling
+        final_reduction = max(0, baseline_aqi - prediction) if (traffic_reduction + dust_reduction) > 0 else 0
         projected_aqi = max(10, round(baseline_aqi - final_reduction))
 
         return {
