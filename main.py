@@ -37,10 +37,11 @@ def load_resources():
 async def startup():
     load_resources()
 
+# Purane @app.get("/") ko isse replace karein
 @app.get("/")
-def home():
-    return {"message": "AirPulse 2.0 Backend is Live on Render!", "mae_context": 125.94}
-
+@app.head("/") # Yeh line Render ke health check ko '200 OK' degi
+async def root():
+    return {"status": "online", "message": "AirPulse 2.0 Backend is Live!"}
 @app.get("/simulate")
 async def simulate(city: str, baseline_aqi: float, traffic_reduction: float, dust_reduction: float):
     if model is None: load_resources()
@@ -94,4 +95,5 @@ async def simulate(city: str, baseline_aqi: float, traffic_reduction: float, dus
             }
         }
     except Exception as e:
+
         raise HTTPException(status_code=500, detail=str(e))
